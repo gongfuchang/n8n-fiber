@@ -28,6 +28,7 @@
 				:droppable="droppable"
 				:node="node"
 				:path="path"
+				:event-bus="eventBus"
 				@input="valueChanged"
 				@modalOpenerClick="openExpressionEditorModal"
 				@focus="setFocus"
@@ -87,16 +88,17 @@
 				<code-node-editor
 					v-if="editorType === 'codeNodeEditor' && isCodeNode(node)"
 					:mode="node.parameters.mode"
-					:value="node.parameters.jsCode"
+					:value="value"
 					:defaultValue="parameter.default"
 					:language="editorLanguage"
 					:isReadOnly="isReadOnly"
+					:aiButtonEnabled="settingsStore.isCloudDeployment"
 					@valueChanged="valueChangedDebounced"
 				/>
 
 				<html-editor
 					v-else-if="editorType === 'htmlEditor'"
-					:html="node.parameters.html"
+					:html="value"
 					:isReadOnly="isReadOnly"
 					:rows="getArgument('rows')"
 					:disableExpressionColoring="!isHtmlNode(node)"
@@ -106,7 +108,7 @@
 
 				<sql-editor
 					v-else-if="editorType === 'sqlEditor'"
-					:query="node.parameters.query"
+					:query="value"
 					:dialect="getArgument('sqlDialect')"
 					:isReadOnly="isReadOnly"
 					@valueChanged="valueChangedDebounced"
@@ -361,10 +363,11 @@ import type {
 	INodeProperties,
 	INodePropertyCollection,
 	NodeParameterValueType,
+	IParameterLabel,
 	EditorType,
 	CodeNodeEditorLanguage,
 } from 'n8n-workflow';
-import { NodeHelpers } from 'n8n-workflow';
+import { NodeHelpers, CREDENTIAL_EMPTY_VALUE } from 'n8n-workflow';
 
 import CredentialsSelect from '@/components/CredentialsSelect.vue';
 import ExpressionEdit from '@/components/ExpressionEdit.vue';
@@ -379,7 +382,6 @@ import { externalHooks } from '@/mixins/externalHooks';
 import { nodeHelpers } from '@/mixins/nodeHelpers';
 import { workflowHelpers } from '@/mixins/workflowHelpers';
 import { hasExpressionMapping, isValueExpression, isResourceLocatorValue } from '@/utils';
-
 import { CODE_NODE_TYPE, CUSTOM_API_CALL_KEY, HTML_NODE_TYPE } from '@/constants';
 import type { PropType } from 'vue';
 import { debounceHelper } from '@/mixins/debounce';
@@ -387,10 +389,11 @@ import { useWorkflowsStore } from '@/stores/workflows.store';
 import { useNDVStore } from '@/stores/ndv.store';
 import { useNodeTypesStore } from '@/stores/nodeTypes.store';
 import { useCredentialsStore } from '@/stores/credentials.store';
+import { useSettingsStore } from '@/stores/settings.store';
 import { htmlEditorEventBus } from '@/event-bus';
 import Vue from 'vue';
-
-type ResourceLocatorRef = InstanceType<typeof ResourceLocator>;
+import type { EventBus } from 'n8n-design-system/utils';
+import { createEventBus } from 'n8n-design-system/utils';
 
 export default defineComponent({
 	name: 'parameter-input',
@@ -455,6 +458,16 @@ export default defineComponent({
 		expressionEvaluated: {
 			type: String as PropType<string | undefined>,
 		},
+		label: {
+			type: Object as PropType<IParameterLabel>,
+			default: () => ({
+				size: 'small',
+			}),
+		},
+		eventBus: {
+			type: Object as PropType<EventBus>,
+			default: () => createEventBus(),
+		},
 	},
 	data() {
 		return {
@@ -505,10 +518,10 @@ export default defineComponent({
 		};
 	},
 	watch: {
-		dependentParametersValues() {
+		async dependentParametersValues() {
 			// Reload the remote parameters whenever a parameter
 			// on which the current field depends on changes
-			void this.loadRemoteParameterOptions();
+			await this.loadRemoteParameterOptions();
 		},
 		value() {
 			if (this.parameter.type === 'color' && this.getArgument('showAlpha') === true) {
@@ -519,7 +532,13 @@ export default defineComponent({
 		},
 	},
 	computed: {
-		...mapStores(useCredentialsStore, useNodeTypesStore, useNDVStore, useWorkflowsStore),
+		...mapStores(
+			useCredentialsStore,
+			useNodeTypesStore,
+			useNDVStore,
+			useWorkflowsStore,
+			useSettingsStore,
+		),
 		expressionDisplayValue(): string {
 			if (this.forceShowExpression) {
 				return '';
@@ -586,6 +605,11 @@ export default defineComponent({
 				// display the user the key instead of the value it
 				// represents
 				return this.$locale.baseText('parameterInput.loadingOptions');
+			}
+
+			// if the value is marked as empty return empty string, to prevent displaying the asterisks
+			if (this.value === CREDENTIAL_EMPTY_VALUE) {
+				return '';
 			}
 
 			let returnValue;
@@ -1098,9 +1122,7 @@ export default defineComponent({
 				}
 			} else if (command === 'refreshOptions') {
 				if (this.isResourceLocatorParameter) {
-					const resourceLocatorRef = this.$refs.resourceLocator as ResourceLocatorRef | undefined;
-
-					resourceLocatorRef?.$emit('refreshList');
+					this.eventBus.emit('refreshList');
 				}
 				void this.loadRemoteParameterOptions();
 			} else if (command === 'formatHtml') {
@@ -1132,7 +1154,7 @@ export default defineComponent({
 		});
 	},
 	mounted() {
-		this.$on('optionSelected', this.optionSelected);
+		this.eventBus.on('optionSelected', this.optionSelected);
 
 		this.tempValue = this.displayValue as string;
 		if (this.node !== null) {
@@ -1171,6 +1193,9 @@ export default defineComponent({
 			parameter: this.parameter,
 			inputFieldRef: this.$refs['inputField'],
 		});
+	},
+	beforeDestroy() {
+		this.eventBus.off('optionSelected', this.optionSelected);
 	},
 });
 </script>
